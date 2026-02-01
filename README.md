@@ -69,14 +69,23 @@ Priority: Workspace > Global > Bundled
 
 No external dependencies — uses Node.js built-in modules only.
 
-## Usage Examples
+## Usage
 
-### Scan a GitHub Skill (Recommended)
+### Just Ask (Easiest)
+Once installed, simply ask your assistant to scan a skill:
+
+> "Scan this: https://github.com/user/some-skill"
+
+That's it. The skill auditor runs automatically, scans the code, and returns a visual security report. You can then choose to view details, install, or pass.
+
+### CLI (Advanced)
+You can also run the scripts directly:
+
 ```bash
-# Quick visual report
+# Scan a GitHub skill
 node scripts/scan-url.js https://github.com/user/some-skill/tree/main/skill-name
 
-# Save detailed JSON
+# Save detailed JSON + format report
 node scripts/scan-url.js https://github.com/user/some-skill --json report.json
 node scripts/format-report.js report.json
 ```
