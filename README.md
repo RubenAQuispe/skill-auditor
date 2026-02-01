@@ -46,9 +46,10 @@ The Skill Auditor analyzes skill code (JavaScript, Python, shell scripts, etc.) 
 
 ## Installation
 
-### ClawdHub CLI (Recommended)
+### From GitHub (Recommended)
 ```bash
-npx clawdhub@latest install skill-auditor
+git clone https://github.com/RubenAQuispe/skill-auditor.git
+cp -r skill-auditor ~/.openclaw/skills/
 ```
 
 ### Manual Installation
@@ -60,9 +61,8 @@ Download and copy the skill folder to one of these locations:
 | Workspace | `<project>/skills/skill-auditor/` |
 
 ```bash
-# Clone and copy to your skills directory
-git clone https://github.com/RubenAQuispe/skill-auditor.git
-cp -r skill-auditor ~/.openclaw/skills/
+# Or download and copy manually
+# Download the ZIP from GitHub → extract → copy to your skills directory
 ```
 
 Priority: Workspace > Global > Bundled
