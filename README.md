@@ -46,7 +46,12 @@ The Skill Auditor analyzes skill code (JavaScript, Python, shell scripts, etc.) 
 
 ## Installation
 
-### From GitHub (Recommended)
+### ClawHub (Recommended)
+```bash
+clawhub install skill-auditor
+```
+
+### From GitHub
 ```bash
 git clone https://github.com/RubenAQuispe/skill-auditor.git
 cp -r skill-auditor ~/.openclaw/skills/
