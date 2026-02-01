@@ -46,12 +46,28 @@ The Skill Auditor analyzes skill code (JavaScript, Python, shell scripts, etc.) 
 
 ## Installation
 
+### ClawdHub CLI (Recommended)
 ```bash
-git clone https://github.com/[your-username]/skill-auditor.git
-cd skill-auditor
+npx clawdhub@latest install skill-auditor
 ```
 
-No dependencies required — uses Node.js built-in modules only.
+### Manual Installation
+Download and copy the skill folder to one of these locations:
+
+| Scope | Path |
+|-------|------|
+| Global | `~/.openclaw/skills/skill-auditor/` |
+| Workspace | `<project>/skills/skill-auditor/` |
+
+```bash
+# Clone and copy to your skills directory
+git clone https://github.com/RubenAQuispe/skill-auditor.git
+cp -r skill-auditor ~/.openclaw/skills/
+```
+
+Priority: Workspace > Global > Bundled
+
+No external dependencies — uses Node.js built-in modules only.
 
 ## Usage Examples
 
@@ -176,14 +192,11 @@ for skill in skills/*/; do
 done
 ```
 
-## Contributing
+## Updates
 
-This is a security tool. Threat patterns are maintained by the project authors only — there is no external submission mechanism to prevent pattern poisoning or social engineering attacks.
+Threat patterns are maintained by the project authors only — there is no external submission mechanism to prevent pattern poisoning or social engineering attacks.
 
-If you discover new threat patterns or false positives, please open an issue with:
-- Sample code that should be detected (or shouldn't be flagged)
-- Explanation of why it's dangerous (or safe)
-- Suggested regex pattern and severity level
+Watch this repo for releases. Updates are manual — download the new version, review the CHANGELOG, and replace your installed copy. See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Technical Details
 
