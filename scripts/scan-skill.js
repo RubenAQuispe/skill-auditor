@@ -427,13 +427,13 @@ function scanFile(filePath, skillDir) {
 function parseSkillMd(skillDir) {
   const skillMdPath = path.join(skillDir, 'SKILL.md');
   if (!fs.existsSync(skillMdPath)) {
-    return { name: 'unknown', description: 'No SKILL.md found', hasSkillMd: false };
+    return { name: 'unknown', description: 'No SKILL.md found', hasSkillMd: false, fullContent: '' };
   }
 
   const content = fs.readFileSync(skillMdPath, 'utf-8');
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
   if (!fmMatch) {
-    return { name: 'unknown', description: 'No frontmatter', hasSkillMd: true };
+    return { name: 'unknown', description: 'No frontmatter', hasSkillMd: true, fullContent: content };
   }
 
   const fm = fmMatch[1];
@@ -442,9 +442,79 @@ function parseSkillMd(skillDir) {
 
   return {
     name: nameMatch ? nameMatch[1].trim() : 'unknown',
-    description: descMatch ? descMatch[1].trim() : 'No description',
-    hasSkillMd: true
+    description: descMatch ? descMatch[1].trim().replace(/^["']|["']$/g, '') : 'No description',
+    hasSkillMd: true,
+    fullContent: content
   };
+}
+
+// ─── Intent-Aware Finding Analysis ─────────────────────────────────
+
+/**
+ * Cross-references findings against the skill's declared purpose.
+ * If a finding matches what the skill says it does, it's downgraded
+ * and marked as intentMatch: true.
+ */
+function applyIntentMatching(findings, skillMeta) {
+  if (!skillMeta.hasSkillMd || !skillMeta.fullContent) return findings;
+
+  const desc = (skillMeta.description + '\n' + skillMeta.fullContent).toLowerCase();
+
+  // Build intent patterns: what files/behaviors does the skill say it touches?
+  const INTENT_PATTERNS = [
+    { fileRef: /SOUL\.md/i, descMatch: /soul\.md/i },
+    { fileRef: /AGENTS\.md/i, descMatch: /agents\.md/i },
+    { fileRef: /TOOLS\.md/i, descMatch: /tools\.md/i },
+    { fileRef: /MEMORY\.md/i, descMatch: /memory\.md/i },
+    { fileRef: /HEARTBEAT\.md/i, descMatch: /heartbeat\.md/i },
+    { fileRef: /USER\.md/i, descMatch: /user\.md/i },
+    { fileRef: /memory\//i, descMatch: /memory\//i },
+    { fileRef: /\.learnings/i, descMatch: /\.learnings/i },
+    { fileRef: /sessions_send|sessions_spawn/i, descMatch: /sessions?_(?:send|spawn|list|history)/i },
+    { fileRef: /cron|schedul/i, descMatch: /cron|schedul|hook/i },
+    { fileRef: /CLAUDE\.md/i, descMatch: /claude\.md/i },
+    { fileRef: /copilot-instructions/i, descMatch: /copilot-instructions/i },
+  ];
+
+  const severityDowngrade = { critical: 'medium', high: 'low', medium: 'low', low: 'low' };
+
+  return findings.map(f => {
+    // Check if the finding's snippet or explanation references something the skill discloses
+    const combined = (f.snippet + ' ' + f.explanation).toLowerCase();
+
+    let matched = false;
+    for (const ip of INTENT_PATTERNS) {
+      // Does the finding reference this file/behavior?
+      if (ip.fileRef.test(f.snippet) || ip.fileRef.test(f.explanation)) {
+        // Does the skill description mention it?
+        if (ip.descMatch.test(desc)) {
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    if (matched) {
+      return {
+        ...f,
+        intentMatch: true,
+        originalSeverity: f.originalSeverity || f.severity,
+        severity: severityDowngrade[f.severity] || f.severity,
+        explanation: f.explanation + ' ⚡ Expected behavior — matches skill\'s stated purpose'
+      };
+    } else {
+      // For sensitive file access / persistence findings, mark as undisclosed
+      const sensitiveCategories = ['Sensitive File Access', 'Persistence', 'Data Exfiltration', 'Privilege Escalation'];
+      const note = sensitiveCategories.includes(f.category)
+        ? ' ⚠️ Undisclosed — not mentioned in skill description'
+        : '';
+      return {
+        ...f,
+        intentMatch: false,
+        explanation: f.explanation + note
+      };
+    }
+  });
 }
 
 // ─── Risk Scoring ──────────────────────────────────────────────────
@@ -521,7 +591,7 @@ const ALWAYS_SUSPICIOUS = new Set([
   'Potential data exfiltration'
 ]);
 
-function calculateAccuracyScore(description, actualCapabilities) {
+function calculateAccuracyScore(description, actualCapabilities, findings = []) {
   if (!description || description === 'No SKILL.md found' || description === 'No frontmatter' || description === 'No description') {
     return { score: 1, disclosed: [], undisclosed: actualCapabilities, reason: 'No description provided — impossible to verify intent' };
   }
@@ -549,6 +619,12 @@ function calculateAccuracyScore(description, actualCapabilities) {
     }
   }
 
+  // Count intent-matched findings — these reduce penalty for undisclosed caps
+  const intentMatchedCategories = new Set();
+  for (const f of findings) {
+    if (f.intentMatch) intentMatchedCategories.add(f.category);
+  }
+
   // Score calculation:
   // Start at 10
   // Each undisclosed capability deducts points based on severity
@@ -563,9 +639,25 @@ function calculateAccuracyScore(description, actualCapabilities) {
     'Attempts privilege escalation': 2
   };
 
+  // Map capabilities to categories for intent matching
+  const CAP_TO_CATEGORIES = {
+    'Accesses files outside skill directory': ['File Access', 'Sensitive File Access'],
+    'Attempts persistence mechanisms': ['Persistence'],
+    'Makes network requests': ['Network'],
+    'Executes shell commands': ['Shell Execution'],
+    'Attempts privilege escalation': ['Privilege Escalation'],
+  };
+
   let score = 10;
   for (const cap of undisclosed) {
-    score -= (DEDUCTIONS[cap] || 1);
+    // If most findings in this category are intent-matched, reduce deduction
+    const relatedCats = CAP_TO_CATEGORIES[cap] || [];
+    const hasIntentMatch = relatedCats.some(c => intentMatchedCategories.has(c));
+    if (hasIntentMatch) {
+      score -= (DEDUCTIONS[cap] || 1) * 0.25; // Only 25% penalty if intent-matched
+    } else {
+      score -= (DEDUCTIONS[cap] || 1);
+    }
   }
 
   // Bonus: if capabilities ARE disclosed, slight boost for honesty
@@ -650,6 +742,9 @@ function main() {
     .map(f => f.match);
   const uniqueUrls = [...new Set(urls)];
 
+  // Apply intent matching
+  allFindings = applyIntentMatching(allFindings, skillMeta);
+
   // Build report
   const report = {
     skill: {
@@ -665,7 +760,7 @@ function main() {
     },
     riskLevel,
     reputation: { publisher: 'Local install', tier: 'local', note: 'Installed from local source', warning: 'No publisher info available — verify source yourself.' },
-    accuracyScore: calculateAccuracyScore(skillMeta.description, capabilities),
+    accuracyScore: calculateAccuracyScore(skillMeta.description, capabilities, allFindings),
     findings: allFindings,
     findingCount: allFindings.length,
     summary: {

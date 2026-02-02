@@ -147,7 +147,7 @@ const DESC_KEYWORDS = {
 };
 const DEDUCTIONS = { 'Uses obfuscation techniques': 4, 'Contains prompt injection attempts': 5, 'Potential data exfiltration': 5, 'Makes network requests': 1.5, 'Accesses files outside skill directory': 2, 'Executes shell commands': 2, 'Attempts persistence mechanisms': 3, 'Attempts privilege escalation': 2 };
 
-function calcAccuracy(description, caps) {
+function calcAccuracy(description, caps, findings = []) {
   if (!description || description === 'No description') return { score: 1, undisclosed: caps, reason: 'No description provided' };
   if (caps.length === 0) return { score: 10, undisclosed: [], reason: 'Skill does what it says and nothing more' };
 
@@ -158,8 +158,28 @@ function calcAccuracy(description, caps) {
     kws.some(r => r.test(description)) ? disclosed.push(cap) : undisclosed.push(cap);
   }
 
+  // Check intent-matched categories
+  const intentMatchedCategories = new Set();
+  for (const f of findings) { if (f.intentMatch) intentMatchedCategories.add(f.category); }
+
+  const CAP_TO_CATEGORIES = {
+    'Accesses files outside skill directory': ['File Access', 'Sensitive File Access'],
+    'Attempts persistence mechanisms': ['Persistence'],
+    'Makes network requests': ['Network'],
+    'Executes shell commands': ['Shell Execution'],
+    'Attempts privilege escalation': ['Privilege Escalation'],
+  };
+
   let score = 10;
-  for (const cap of undisclosed) score -= (DEDUCTIONS[cap] || 1);
+  for (const cap of undisclosed) {
+    const relatedCats = CAP_TO_CATEGORIES[cap] || [];
+    const hasIntentMatch = relatedCats.some(c => intentMatchedCategories.has(c));
+    if (hasIntentMatch) {
+      score -= (DEDUCTIONS[cap] || 1) * 0.25;
+    } else {
+      score -= (DEDUCTIONS[cap] || 1);
+    }
+  }
   score += disclosed.length * 0.25;
   score = Math.max(1, Math.min(10, Math.round(score)));
 
@@ -169,6 +189,54 @@ function calcAccuracy(description, caps) {
     'Description does not match actual behavior — skill is deceptive';
 
   return { score, disclosed, undisclosed, reason };
+}
+
+// ─── Intent-Aware Finding Analysis ─────────────────────────────────
+
+function applyIntentMatching(findings, description, fullContent) {
+  if (!fullContent && !description) return findings;
+
+  const desc = ((description || '') + '\n' + (fullContent || '')).toLowerCase();
+
+  const INTENT_PATTERNS = [
+    { fileRef: /SOUL\.md/i, descMatch: /soul\.md/i },
+    { fileRef: /AGENTS\.md/i, descMatch: /agents\.md/i },
+    { fileRef: /TOOLS\.md/i, descMatch: /tools\.md/i },
+    { fileRef: /MEMORY\.md/i, descMatch: /memory\.md/i },
+    { fileRef: /HEARTBEAT\.md/i, descMatch: /heartbeat\.md/i },
+    { fileRef: /USER\.md/i, descMatch: /user\.md/i },
+    { fileRef: /memory\//i, descMatch: /memory\//i },
+    { fileRef: /\.learnings/i, descMatch: /\.learnings/i },
+    { fileRef: /sessions_send|sessions_spawn/i, descMatch: /sessions?_(?:send|spawn|list|history)/i },
+    { fileRef: /cron|schedul/i, descMatch: /cron|schedul|hook/i },
+    { fileRef: /CLAUDE\.md/i, descMatch: /claude\.md/i },
+    { fileRef: /copilot-instructions/i, descMatch: /copilot-instructions/i },
+  ];
+
+  const severityDowngrade = { critical: 'medium', high: 'low', medium: 'low', low: 'low' };
+
+  return findings.map(f => {
+    const combined = (f.snippet + ' ' + f.explanation).toLowerCase();
+    let matched = false;
+    for (const ip of INTENT_PATTERNS) {
+      if (ip.fileRef.test(f.snippet) || ip.fileRef.test(f.explanation)) {
+        if (ip.descMatch.test(desc)) { matched = true; break; }
+      }
+    }
+
+    if (matched) {
+      return {
+        ...f, intentMatch: true,
+        originalSeverity: f.originalSeverity || f.severity,
+        severity: severityDowngrade[f.severity] || f.severity,
+        explanation: f.explanation + ' ⚡ Expected behavior — matches skill\'s stated purpose'
+      };
+    } else {
+      const sensitiveCategories = ['Sensitive File Access', 'Persistence', 'Data Exfiltration', 'Privilege Escalation'];
+      const note = sensitiveCategories.includes(f.category) ? ' ⚠️ Undisclosed — not mentioned in skill description' : '';
+      return { ...f, intentMatch: false, explanation: f.explanation + note };
+    }
+  });
 }
 
 // ─── Publisher Reputation ───────────────────────────────────────────
@@ -280,19 +348,23 @@ async function main() {
 
   // Parse SKILL.md for metadata
   const skillFile = textFiles.find(f => f.name === 'SKILL.md');
-  let skillMeta = { name: gh.path.split('/').pop() || gh.repo, description: 'No description', hasSkillMd: false };
+  let skillMeta = { name: gh.path.split('/').pop() || gh.repo, description: 'No description', hasSkillMd: false, fullContent: '' };
 
   if (skillFile) {
     const raw = await httpGet(skillFile.download_url);
     if (raw.status === 200) {
+      skillMeta.fullContent = raw.data;
       const fmMatch = raw.data.match(/^---\s*\n([\s\S]*?)\n---/);
       if (fmMatch) {
         const nm = fmMatch[1].match(/^name:\s*(.+)$/m);
         const dm = fmMatch[1].match(/^description:\s*(.+)$/m);
-        skillMeta = { name: nm ? nm[1].trim() : skillMeta.name, description: dm ? dm[1].trim() : 'No description', hasSkillMd: true };
+        skillMeta = { ...skillMeta, name: nm ? nm[1].trim() : skillMeta.name, description: dm ? dm[1].trim().replace(/^["']|["']$/g, '') : 'No description', hasSkillMd: true };
       }
     }
   }
+
+  // Apply intent matching
+  allFindings = applyIntentMatching(allFindings, skillMeta.description, skillMeta.fullContent);
 
   const riskLevel = calculateRisk(allFindings);
   const capabilities = summarizeCapabilities(allFindings);
@@ -306,7 +378,7 @@ async function main() {
     reputation,
     scan: { timestamp: new Date().toISOString(), filesScanned: scannedFiles, fileCount: scannedFiles.length },
     riskLevel,
-    accuracyScore: calcAccuracy(skillMeta.description, capabilities),
+    accuracyScore: calcAccuracy(skillMeta.description, capabilities, allFindings),
     findings: allFindings,
     findingCount: allFindings.length,
     summary: {
